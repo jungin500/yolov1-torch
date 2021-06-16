@@ -1,5 +1,5 @@
 # PyTorch-version YOLOv1
-# Training with Pretrained model
+# Training main model based on pretrained model
 
 import os
 import datetime
@@ -13,8 +13,10 @@ import numpy as np
 
 import argparse
 
-from model import YOLOv1Pretrainer
-from pretrainer.dataset import LabelReader, ImageNet
+from model import YOLOv1Pretrainer, YOLOv1
+from maintrainer.dataset import VOCYOLOAnnotator, VOCYolo
+from maintrainer.loss import YoloLoss
+from torchsummary import summary
 
 from tqdm.auto import tqdm
 
@@ -28,7 +30,8 @@ if __name__ == '__main__':
     parser.add_argument('--limit-batch', '-lb', default=False, action='store_true', help='Whether to limit 20 batch (default: False)')
     parser.add_argument('--epochs', '-e', type=int, default=200, help='Epochs to run (default: 200)')
     parser.add_argument('--continue-weight', '-c', default=None, type=str, help='load weight and continue training')
-    parser.add_argument('--run-name', '-rn', default='YOLOv1Pretrainer', type=str, help='Run name (used in checkpoints and tensorboard logdir name')
+    parser.add_argument('--pretrained', '-pw', default=None, type=str, help='load pretrained classifier')
+    parser.add_argument('--run-name', '-rn', default='YOLOv1Maintrainer', type=str, help='Run name (used in checkpoints and tensorboard logdir name')
     args = parser.parse_args()
 
     run_name = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S_') + args.run_name
@@ -54,35 +57,27 @@ if __name__ == '__main__':
 
     device = torch.device('cuda') if args.gpu else torch.device('cpu')
 
-    labels = LabelReader(label_file_path='pretrainer/label.list').load_label()
-    train_dataset = ImageNet(
-        labels=labels,
-        root_dir='/media/jungin500/windows-10/Dataset/ILSVRC/Data/CLS-LOC/train',
-        transform=transforms.Compose([
-            transforms.RandomResizedCrop((224, 224)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.4547857, 0.4349471, 0.40525291],
-                std=[0.12003352, 0.12323549, 0.1392444]
-            )
-        ]),
-        classes=1000
+    annotator = VOCYOLOAnnotator(
+        annotation_root=r'C:\Development\dataset\VOCdevkit\VOC2007\Annotations',
+        image_root=r'C:\Development\dataset\VOCdevkit\VOC2007\JPEGImages'
     )
 
-    valid_dataset = ImageNet(
-        labels=labels,
-        root_dir='/media/jungin500/windows-10/Dataset/ILSVRC/Data/CLS-LOC/val-sub',
+    annotations = annotator.parse_annotation()
+    dataset = VOCYolo(
+        annotator.labels,
+        annotations,
         transform=transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize((448, 448)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.4547857, 0.4349471, 0.40525291],
                 std=[0.12003352, 0.12323549, 0.1392444]
             )
-        ]),
-        classes=1000
+        ])
     )
+
+    trainlen, validlen = int(len(dataset) * 0.9), len(dataset) - int(len(dataset) * 0.9)
+    train_dataset, valid_dataset = torch.utils.data.random_split(dataset, [trainlen, validlen])
 
     # only for args.limit_batch
     LIMIT_BATCH_SIZE = 128
@@ -91,10 +86,27 @@ if __name__ == '__main__':
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, **dataloader_extras)
     valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=args.batch_size, **dataloader_extras)
 
-    model = YOLOv1Pretrainer(classes=1000).to(device).float()
-    # summary(model, input_size=(3, 224, 224), batch_size=args.batch_size, device=device.type)
+    if args.pretrained:
+        if not os.path.isfile(args.pretrained):
+            print("Pretrained weight file %s not found!" % args.pretrained)
+            exit(-1)
 
-    criterion = torch.nn.CrossEntropyLoss()
+        checkpoint = torch.load(args.pretrained)
+        # c_epoch = checkpoint['epoch'] + 1
+        c_model_state_dict = checkpoint['model_state_dict']
+        # c_optimizer_state_dict = checkpoint['optimizer_state_dict']
+        # c_loss = checkpoint['loss']
+
+        pretrainer = YOLOv1Pretrainer(classes=1000)
+        pretrainer.load_state_dict(c_model_state_dict)
+        model = YOLOv1(pretrainer).to(device).float()
+        del pretrainer
+    else:
+        model = YOLOv1().to(device).float()
+
+    summary(model, input_size=(3, 448, 448), batch_size=args.batch_size, device=device.type)
+
+    criterion = YoloLoss(lambda_coord=5, lambda_noobj=0.5)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     summary_writer = SummaryWriter(log_dir=os.path.join('logs', run_name))
@@ -118,21 +130,11 @@ if __name__ == '__main__':
     else:
         epoch_range = range(total_epochs)
 
-    scaler = torch.cuda.amp.GradScaler()
+    # scaler = torch.cuda.amp.GradScaler()
 
     epoch_val_accuracies = []
     exit_reason = 0
     for epoch in epoch_range:
-
-        if 1 <= (epoch + 1) < 20:
-            for g in optimizer.param_groups:
-                g['lr'] = 0.00025
-        elif 20 <= (epoch + 1) < 40:
-            for g in optimizer.param_groups:
-                g['lr'] = 0.0001
-        elif 40 <= (epoch + 1) < 60:
-            for g in optimizer.param_groups:
-                g['lr'] = 0.00005
         print("Learning rate set to %.4f" % (optimizer.param_groups[0]['lr']))
 
         summary_writer.add_scalar('Hyperparameters/Learning Rate', optimizer.param_groups[0]['lr'], epoch)
@@ -145,25 +147,25 @@ if __name__ == '__main__':
         for i, (image, label) in tr:
             if args.limit_batch and i > LIMIT_BATCH_SIZE:
                 break
-            image = image.cuda(device, non_blocking=True)
-            label = label.cuda(device, non_blocking=True)
+            image = image.cuda(non_blocking=True)
+            label = label.cuda(non_blocking=True)
 
-            with torch.cuda.amp.autocast():
-                output = model(image)
-                loss = criterion(output, label)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            # loss.backward()
-            # optimizer.step()
+            # with torch.cuda.amp.autocast():
+            output = model(image)
+            loss = criterion(output, label)
+            # scaler.scale(loss).backward()
+            # scaler.step(optimizer)
+            # scaler.update()
+            loss.backward()
+            optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
-                accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
-                accuracies.append(accuracy.item())
+                # accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
+                # accuracies.append(accuracy.item())
                 losses.append(loss.item())
                 summary_writer.add_scalar('Training/Batch Loss', losses[-1], epoch * len(train_dataloader) + i)
-                summary_writer.add_scalar('Training/Batch Accuracy', accuracies[-1], epoch * len(train_dataloader) + i)
+                # summary_writer.add_scalar('Training/Batch Accuracy', accuracies[-1], epoch * len(train_dataloader) + i)
 
                 tr.set_description(
                     "[Epoch %04d/%04d][Image Batch %04d/%04d] Training Loss: %.4f Training Accuracy: %.4f" %
@@ -201,11 +203,11 @@ if __name__ == '__main__':
 
                 output = model(image)
                 loss = criterion(output, label)
-                accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
-                top_5_accracy = torch.mean(torch.any(torch.eq(torch.argsort(output, dim=1)[:, -5:], label.unsqueeze(1).repeat(1, 5)), 1).int().float())
+                # accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
+                # top_5_accracy = torch.mean(torch.any(torch.eq(torch.argsort(output, dim=1)[:, -5:], label.unsqueeze(1).repeat(1, 5)), 1).int().float())
 
-                accuracies.append(accuracy.item())
-                top_5_accuracies.append(top_5_accracy.item())
+                # accuracies.append(accuracy.item())
+                # top_5_accuracies.append(top_5_accracy.item())
                 losses.append(loss.item())
 
                 vl.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Validation Loss: %.4f, Accuracy: %.4f, Top-5 Accuracy: %.4f" % (
@@ -213,16 +215,16 @@ if __name__ == '__main__':
 
             for i in range(len(losses)):
                 summary_writer.add_scalar('Validation/Batch Loss', losses[i], epoch * len(valid_dataloader) + i)
-                summary_writer.add_scalar('Validation/Batch Accuracy', accuracies[i], epoch * len(valid_dataloader) + i)
-                summary_writer.add_scalar('Validation/Batch Top-5 Accuracy', top_5_accuracies[i], epoch * len(valid_dataloader) + i)
+                # summary_writer.add_scalar('Validation/Batch Accuracy', accuracies[i], epoch * len(valid_dataloader) + i)
+                # summary_writer.add_scalar('Validation/Batch Top-5 Accuracy', top_5_accuracies[i], epoch * len(valid_dataloader) + i)
 
             val_loss_value = np.mean(losses)
             val_acc_value = np.mean(accuracies)
             val_acc_t5_value = np.mean(top_5_accuracies)
 
             summary_writer.add_scalar('Validation/Epoch Loss', val_loss_value, epoch)
-            summary_writer.add_scalar('Validation/Epoch Accuracy', val_acc_value, epoch)
-            summary_writer.add_scalar('Validation/Epoch Top-5 Accuracy', val_acc_t5_value, epoch)
+            # summary_writer.add_scalar('Validation/Epoch Accuracy', val_acc_value, epoch)
+            # summary_writer.add_scalar('Validation/Epoch Top-5 Accuracy', val_acc_t5_value, epoch)
 
             if not epoch_val_accuracies or np.max(epoch_val_accuracies) < val_acc_value:
                 if not os.path.isdir('.checkpoints'):
