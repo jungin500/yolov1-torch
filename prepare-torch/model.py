@@ -48,12 +48,14 @@ class YoloFinalLayer(Module):
             self.act = LeakyReLU(negative_slope=0.1, inplace=True)
         else:
             self.act = Identity()
+        self.dropout = Dropout(0.5)
         self.classifier1 = Linear(in_features=4096, out_features=1470)
 
     def forward(self, x):
         x = x.view(-1, 50176)
         x = self.classifier0(x)
         self.act(x)
+        x = self.dropout(x)
         x = self.classifier1(x)
         x = x.view(-1, 30, 7, 7)
         return x
@@ -126,10 +128,17 @@ class YoloClassifier(Module):
 
 
 class YOLOv1(Module):
-    def __init__(self):
+    def __init__(self, pretrainer=None):
         super().__init__()
 
-        self.features = YoloFeatureExtractor('relu')
+        if pretrainer is not None:
+            print("YOLOv1: Loaded pretrained weights from Pretrainer")
+            self.features = pretrainer.features
+            for param in self.features.parameters():
+                param.requires_grad = False
+            print("YOLOv1: Disabled pretrained parameter gradients")
+        else:
+            self.features = YoloFeatureExtractor('relu')
         self.classifiers = YoloClassifier('relu')
 
     def forward(self, x):
