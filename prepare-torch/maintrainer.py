@@ -23,6 +23,7 @@ from tqdm.auto import tqdm
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', '-g', default=False, action='store_true', help='Enables GPU')
+    parser.add_argument('--no-checkpoint', '-nc', default=False, action='store_true', help='Disables checkpoint')
     parser.add_argument('--batch-size', '-b', type=int, default=32, help='Batch size (default: 32)')
     parser.add_argument('--num-workers', '-p', default=0, type=int, help='num_workers (default: 0)')
     parser.add_argument('--learning-rate', '-l', default=0.01, type=float, help='Learning rate (default: 0.01)')
@@ -58,8 +59,8 @@ if __name__ == '__main__':
     device = torch.device('cuda') if args.gpu else torch.device('cpu')
 
     annotator = VOCYOLOAnnotator(
-        annotation_root=r'C:\Development\dataset\VOCdevkit\VOC2007\Annotations',
-        image_root=r'C:\Development\dataset\VOCdevkit\VOC2007\JPEGImages'
+        annotation_root=r'C:\Dataset\VOCdevkit\VOC2008\Annotations',
+        image_root=r'C:\Dataset\VOCdevkit\VOC2008\JPEGImages'
     )
 
     annotations = annotator.parse_annotation()
@@ -101,10 +102,12 @@ if __name__ == '__main__':
         pretrainer.load_state_dict(c_model_state_dict)
         model = YOLOv1(pretrainer).to(device).float()
         del pretrainer
+        torch.cuda.empty_cache()
+        print("Purged unused cuda cache")
     else:
         model = YOLOv1().to(device).float()
 
-    summary(model, input_size=(3, 448, 448), batch_size=args.batch_size, device=device.type)
+    # summary(model, input_size=(3, 448, 448), batch_size=args.batch_size, device=device.type)
 
     criterion = YoloLoss(lambda_coord=5, lambda_noobj=0.5)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -135,13 +138,17 @@ if __name__ == '__main__':
     epoch_val_accuracies = []
     exit_reason = 0
     for epoch in epoch_range:
-        print("Learning rate set to %.4f" % (optimizer.param_groups[0]['lr']))
+        for g in optimizer.param_groups:
+            g['lr'] = args.learning_rate * np.exp(-0.1 * epoch)
+        
+        print("Learning rate set to %.8f (" % optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['lr'], ")")
 
         summary_writer.add_scalar('Hyperparameters/Learning Rate', optimizer.param_groups[0]['lr'], epoch)
         tr = tqdm(enumerate(train_dataloader), total=len(train_dataloader), ncols=160,
                   desc='[Epoch %04d/%04d] Spawning Workers' % (epoch + 1, total_epochs))
 
-        accuracies = []
+        class_accuracies = []
+        class_top_5_accuracies = []
         losses = []
         model.train()
         for i, (image, label) in tr:
@@ -161,22 +168,38 @@ if __name__ == '__main__':
             optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
-                # accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
-                # accuracies.append(accuracy.item())
+                class_accuracy = torch.sum(
+                    torch.eq(
+                        torch.argmax(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1),
+                        torch.argmax(label, dim=1)
+                    ) * (label[:, 4, :, :] == 1)
+                ) / torch.sum(label[:, 4:5, :, :])
+                class_top_5_accuracy = torch.sum(
+                    torch.any(
+                        torch.eq(
+                            torch.argsort(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1)[:, -5:, :, :],
+                            torch.argmax(label, dim=1, keepdim=True).repeat(1, 5, 1, 1)
+                        ),
+                        dim=1
+                    ) * (label[:, 4, :, :] == 1)
+                ) / torch.sum(label[:, 4:5, :, :])
+                class_accuracies.append(class_accuracy.item())
+                class_top_5_accuracies.append(class_top_5_accuracy.item())
                 losses.append(loss.item())
                 summary_writer.add_scalar('Training/Batch Loss', losses[-1], epoch * len(train_dataloader) + i)
                 # summary_writer.add_scalar('Training/Batch Accuracy', accuracies[-1], epoch * len(train_dataloader) + i)
 
                 tr.set_description(
-                    "[Epoch %04d/%04d][Image Batch %04d/%04d] Training Loss: %.4f Training Accuracy: %.4f" %
-                    (epoch + 1, total_epochs, i, len(train_dataloader), np.mean(losses), np.mean(accuracies)))
+                    "[Epoch %04d/%04d][Image Batch %04d/%04d] Training Loss: %.4f CLS1 Acc: %.4f CLS5 Acc: %.4f" %
+                    (epoch + 1, total_epochs, i, len(train_dataloader), np.mean(losses), np.mean(class_accuracies), np.mean(class_top_5_accuracies))
+                )
 
                 if np.isnan(np.mean(losses)):
                     break
 
         if not args.limit_batch:
             train_loss_value = np.mean(losses)
-            train_accuracy_value = np.mean(accuracies)
+            train_accuracy_value = np.mean(class_accuracies)
 
             summary_writer.add_scalar('Training/Epoch Loss', train_loss_value, epoch)
             summary_writer.add_scalar('Training/Epoch Accuracy', train_accuracy_value, epoch)
@@ -190,8 +213,8 @@ if __name__ == '__main__':
             vl = tqdm(enumerate(valid_dataloader), total=len(valid_dataloader), ncols=160,
                       desc='[Epoch %04d/%04d] Spawning Workers' % (epoch + 1, total_epochs))
 
-            accuracies = []
-            top_5_accuracies = []
+            class_accuracies = []
+            class_top_5_accuracies = []
             losses = []
             model.eval()
             for i, (image, label) in vl:
@@ -203,42 +226,57 @@ if __name__ == '__main__':
 
                 output = model(image)
                 loss = criterion(output, label)
-                # accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
-                # top_5_accracy = torch.mean(torch.any(torch.eq(torch.argsort(output, dim=1)[:, -5:], label.unsqueeze(1).repeat(1, 5)), 1).int().float())
-
-                # accuracies.append(accuracy.item())
-                # top_5_accuracies.append(top_5_accracy.item())
+                class_accuracy = torch.sum(
+                    torch.eq(
+                        torch.argmax(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1),
+                        torch.argmax(label, dim=1)
+                    ) * (label[:, 4, :, :] == 1)
+                ) / torch.sum(label[:, 4:5, :, :])
+                class_top_5_accuracy = torch.sum(
+                    torch.any(
+                        torch.eq(
+                            torch.argsort(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1)[:, -5:, :, :],
+                            torch.argmax(label, dim=1, keepdim=True).repeat(1, 5, 1, 1)
+                        ),
+                        dim=1
+                    ) * (label[:, 4, :, :] == 1)
+                ) / torch.sum(label[:, 4:5, :, :])
+                class_accuracies.append(class_accuracy.item())
+                class_top_5_accuracies.append(class_top_5_accuracy.item())
                 losses.append(loss.item())
 
-                vl.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Validation Loss: %.4f, Accuracy: %.4f, Top-5 Accuracy: %.4f" % (
-                                   epoch + 1, total_epochs, i, len(valid_dataloader), np.mean(losses), np.mean(accuracies), np.mean(top_5_accuracies)))
+                vl.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Validation Loss: %.4f, CLS1 Acc: %.4f CLS5 Acc: %.4f" % (
+                    epoch + 1, total_epochs, i, len(valid_dataloader), np.mean(losses), np.mean(class_accuracies), np.mean(class_top_5_accuracies)))
 
             for i in range(len(losses)):
                 summary_writer.add_scalar('Validation/Batch Loss', losses[i], epoch * len(valid_dataloader) + i)
-                # summary_writer.add_scalar('Validation/Batch Accuracy', accuracies[i], epoch * len(valid_dataloader) + i)
-                # summary_writer.add_scalar('Validation/Batch Top-5 Accuracy', top_5_accuracies[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch CLS Accuracy', class_accuracies[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch CLS Top-5 Accuracy', class_top_5_accuracies[i], epoch * len(valid_dataloader) + i)
 
             val_loss_value = np.mean(losses)
-            val_acc_value = np.mean(accuracies)
-            val_acc_t5_value = np.mean(top_5_accuracies)
+            val_acc_value = np.mean(class_accuracies)
+            val_acc_t5_value = np.mean(class_top_5_accuracies)
 
             summary_writer.add_scalar('Validation/Epoch Loss', val_loss_value, epoch)
-            # summary_writer.add_scalar('Validation/Epoch Accuracy', val_acc_value, epoch)
-            # summary_writer.add_scalar('Validation/Epoch Top-5 Accuracy', val_acc_t5_value, epoch)
+            summary_writer.add_scalar('Validation/Epoch Accuracy', val_acc_value, epoch)
+            summary_writer.add_scalar('Validation/Epoch Top-5 Accuracy', val_acc_t5_value, epoch)
 
             if not epoch_val_accuracies or np.max(epoch_val_accuracies) < val_acc_value:
-                if not os.path.isdir('.checkpoints'):
-                    os.mkdir('.checkpoints')
-                save_filename = os.path.join('.checkpoints',
-                                             '%s-epoch%04d-train_loss%.6f-val_loss%.6f-val_acc%.6f-val_acct5%.6f.zip' % (
-                                             run_name, epoch, train_loss_value, val_loss_value, val_acc_value, val_acc_t5_value))
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': loss
-                }, save_filename)
-                print("[Epoch %04d/%04d] Saved checkpoint %s" % (epoch + 1, args.epochs, save_filename))
+                if args.no_checkpoint:
+                    print("[Epoch %04d/%04d] Checkpoint save feature disabled" % (epoch + 1, args.epochs))
+                else:
+                    if not os.path.isdir('.checkpoints'):
+                        os.mkdir('.checkpoints')
+                    save_filename = os.path.join('.checkpoints',
+                                                 '%s-epoch%04d-train_loss%.6f-val_loss%.6f-val_acc%.6f-val_acct5%.6f.zip' % (
+                                                 run_name, epoch, train_loss_value, val_loss_value, val_acc_value, val_acc_t5_value))
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss
+                    }, save_filename)
+                    print("[Epoch %04d/%04d] Saved checkpoint %s" % (epoch + 1, args.epochs, save_filename))
 
             epoch_val_accuracies.append(val_acc_value)
 
