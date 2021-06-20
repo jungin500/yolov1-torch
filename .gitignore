@@ -165,3 +165,6 @@ $RECYCLE.BIN/
 # checkpoints and logs
 **/.checkpoints/
 **/logs/
+
+**/__pycache__/
+**/**.log

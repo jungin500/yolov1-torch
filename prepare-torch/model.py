@@ -138,6 +138,7 @@ class YOLOv1(Module):
                 param.requires_grad = False
             print("YOLOv1: Disabled pretrained parameter gradients")
         else:
+            print("WARNING: YOLOv1: NOT using pretrained")
             self.features = YoloFeatureExtractor('relu')
         self.classifiers = YoloClassifier('relu')
 
