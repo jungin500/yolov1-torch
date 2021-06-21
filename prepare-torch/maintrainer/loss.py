@@ -20,13 +20,12 @@ class YoloLoss(Module):
 
         # target: [cell_pos_x, cell_pos_y, width, height, 1.0] * 7 * 7
         object_gt_exist_mask = target[:, 4:5, :, :] == 1
-        # input = torch.cat([torch.sigmoid(input[:, :bbox_count * 5, :, :]), input[:, :20, :, :]], dim=1)
-        input = torch.cat([target[:, :5, :, :], target[:, :5, :, :], target[:, -20:, :, :]], dim=1)
-        
+        input = torch.cat([torch.sigmoid(input[:, :bbox_count * 5, :, :]), input[:, :20, :, :]], dim=1)
+        # input = torch.cat([target[:, :5, :, :], target[:, :5, :, :], target[:, -20:, :, :]], dim=1)
+
         ## !TODO Important: we only support 2 bbox predicators!
-        resp_indicies, nonresp_indicies = YoloLoss.get_responsible_bbox_predictor_indicies(input, target, bbox_count)  # [B * 1 * 7 * 7]
+        resp_indicies = YoloLoss.get_responsible_bbox_predictor_indicies(input, target, bbox_count)  # [B * 1 * 7 * 7]
         resp_indicies = torch.unsqueeze(resp_indicies, 1).repeat(1, 1, 5, 1, 1)  # [B * 1 * 5 * 7 * 7]
-        nonresp_indicies = torch.unsqueeze(nonresp_indicies, 1).repeat(1, 1, 5, 1, 1)  # [B * 1 * 5 * 7 * 7]
 
         bboxes = []
         for bbox_id in range(bbox_count):
@@ -36,10 +35,10 @@ class YoloLoss(Module):
 
         loss = 0
 
-        print("\t* First predictor: ", torch.sum(resp_indicies == 0), ", Second predictor: ", torch.sum(resp_indicies == 1))
+        # print("\t* First predictor: ", torch.sum(resp_indicies == 0), ", Second predictor: ", torch.sum(resp_indicies == 1))
 
         responsible_predictor = torch.squeeze(torch.gather(merged_bbox, 1, resp_indicies), 1)
-        nonresp_predictor = torch.squeeze(torch.gather(merged_bbox, 1, nonresp_indicies), 1)
+        nonresp_predictor = torch.squeeze(torch.gather(merged_bbox, 1, 1 - resp_indicies), 1)
 
         # # ! TODO: iterate over xy_loss and find out that object_gt_exist_mask works well
         xy_loss = torch.square(responsible_predictor[:, :2, :, :] - target[:, :2, :, :]) * object_gt_exist_mask
@@ -52,12 +51,11 @@ class YoloLoss(Module):
         wh_loss = torch.square(torch.sqrt(responsible_predictor[:, 2:4, :, :]) - torch.sqrt(target[:, 2:4, :, :])) * object_gt_exist_mask
         loss += self.lambda_coord * torch.sum(wh_loss)
         if self.debug: print("wh_loss: ", torch.sum(wh_loss))
+        if self.debug: print("Responsible predictors: ", responsible_predictor.shape)
+        if self.debug: print("Nonresponsible predictors: ", nonresp_predictor.shape)
 
-        print("** Shape currently you want to know: ", torch.sum(torch.square(target[:, 4:5, :, :] - target[:, 4:5, :, :]) * object_gt_exist_mask))
-
-        confidence_difference = torch.square(target[:, 4:5, :, :] - target[:, 4:5, :, :])
-        conf_obj_loss = confidence_difference * object_gt_exist_mask
-        conf_noobj_loss = confidence_difference * ~object_gt_exist_mask
+        conf_obj_loss = torch.square(responsible_predictor[:, 4:5, :, :] - target[:, 4:5, :, :])
+        conf_noobj_loss = torch.square(nonresp_predictor[:, 4:5, :, :] - target[:, 4:5, :, :])
         loss += torch.sum(conf_obj_loss)
         loss += self.lambda_noobj * torch.sum(conf_noobj_loss)
 
@@ -98,7 +96,7 @@ class YoloLoss(Module):
             ious.append(iou)
 
         stacked_iou = torch.stack(ious, dim=1)  # stacked_iou -> (B * 2 * 7 * 7)
-        return torch.argmax(stacked_iou, dim=1), torch.argmin(stacked_iou, dim=1)
+        return torch.argmax(stacked_iou, dim=1)
 
     @staticmethod
     def get_iou_xywh(input_xywh: Tensor, label_xywh: Tensor) -> Tensor:

@@ -59,8 +59,10 @@ if __name__ == '__main__':
     device = torch.device('cuda') if args.gpu else torch.device('cpu')
 
     annotator = VOCYOLOAnnotator(
-        annotation_root=r'C:\Dataset\VOCdevkit\VOC2008\Annotations',
-        image_root=r'C:\Dataset\VOCdevkit\VOC2008\JPEGImages'
+        # annotation_root=r'C:\Dataset\VOCdevkit\VOC2008\Annotations',
+        # image_root=r'C:\Dataset\VOCdevkit\VOC2008\JPEGImages'
+        annotation_root='/media/jungin500/windows-10/Dataset/VOCdevkit/VOC2008/Annotations',
+        image_root='/media/jungin500/windows-10/Dataset/VOCdevkit/VOC2008/JPEGImages'
     )
 
     annotations = annotator.parse_annotation()
