@@ -70,13 +70,13 @@ class YoloLoss(Module):
 
         # CE-version Loss for classes (improved)
         # print("\t*", masked_target_classes.shape)
-        # ce_loss = cross_entropy(masked_input_classes, torch.argmax(masked_target_classes, 1))
-        # loss += ce_loss
+        ce_loss = cross_entropy(masked_input_classes, torch.argmax(masked_target_classes, 1))
+        loss += ce_loss
 
         # MSE-version Loss for classes (paper)
-        class_loss = torch.square(input[:, -20:, :, :] - target[:, -20:, :, :]) * object_gt_exist_mask
-        loss += torch.sum(class_loss)
-        if self.debug: print("class_loss: ", torch.sum(class_loss))
+        # class_loss = torch.square(input[:, -20:, :, :] - target[:, -20:, :, :]) * object_gt_exist_mask
+        # loss += torch.sum(class_loss)
+        # if self.debug: print("class_loss: ", torch.sum(class_loss))
 
         # if self.debug: print("** total loss: ", loss, " **")
         
