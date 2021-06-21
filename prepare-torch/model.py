@@ -55,7 +55,7 @@ class YoloFinalLayer(Module):
         x = x.view(-1, 50176)
         x = self.classifier0(x)
         self.act(x)
-        x = self.dropout(x)
+        # x = self.dropout(x)
         x = self.classifier1(x)
         x = x.view(-1, 30, 7, 7)
         return x
@@ -131,12 +131,12 @@ class YOLOv1(Module):
     def __init__(self, pretrainer=None):
         super().__init__()
 
+        self.pretrained = False
         if pretrainer is not None:
             print("YOLOv1: Loaded pretrained weights from Pretrainer")
             self.features = pretrainer.features
-            for param in self.features.parameters():
-                param.requires_grad = False
-            print("YOLOv1: Disabled pretrained parameter gradients")
+            self.pretrained = True
+            self.disable_features()
         else:
             print("WARNING: YOLOv1: NOT using pretrained")
             self.features = YoloFeatureExtractor('relu')
@@ -147,6 +147,23 @@ class YOLOv1(Module):
         x = self.classifiers(x)
         return x
 
+    def enable_features(self):
+        if not self.pretrained:
+            print("YOLOv1: Not pretrained")
+            return
+
+        print("YOLOv1: Enabled pretrained parameter gradients")
+        for param in self.features.parameters():
+            param.requires_grad = True
+
+    def disable_features(self):
+        if not self.pretrained:
+            print("YOLOv1: Not pretrained")
+            return
+
+        print("YOLOv1: Disabled pretrained parameter gradients")
+        for param in self.features.parameters():
+            param.requires_grad = False
 
 class YOLOv1Pretrainer(Module):
     def __init__(self, classes):
