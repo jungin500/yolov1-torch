@@ -140,8 +140,9 @@ if __name__ == '__main__':
     epoch_val_accuracies = []
     exit_reason = 0
     for epoch in epoch_range:
-        for g in optimizer.param_groups:
-            g['lr'] = args.learning_rate * np.exp(-0.1 * epoch)
+        if epoch % 5 == 0:
+            for g in optimizer.param_groups:
+                g['lr'] = args.learning_rate * np.exp(-0.1 * epoch // 5)
         
         print("Learning rate set to %.8f (" % optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['lr'], ")")
 
