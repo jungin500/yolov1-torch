@@ -1,3 +1,5 @@
+from typing import Tuple, Any
+
 from torch import Tensor
 from torch.nn import *
 from torch.nn.functional import *
@@ -5,6 +7,19 @@ import torch
 
 
 class YoloLoss(Module):
+    def __init__(self, lambda_coord, lambda_noobj, debug=False, visible_output=False):
+        super().__init__()
+        self.loss = YoloVisibleLoss(lambda_coord=lambda_coord, lambda_noobj=lambda_noobj, debug=debug)
+        self.visible_output = visible_output
+
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        losses = self.loss(input, target)
+        if not self.visible_output:
+            losses = torch.sum(torch.stack(losses))
+        return losses
+
+
+class YoloVisibleLoss(Module):
     def __init__(self, lambda_coord, lambda_noobj, debug=False):
         super().__init__()
         self.lambda_coord = lambda_coord
@@ -14,17 +29,18 @@ class YoloLoss(Module):
 
         print("NewYoloLossV9 (CUDA not supported for now)")
 
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+    def forward(self, input: Tensor, target: Tensor) -> Tuple[Any, Any, Tensor, Any, Tensor]:
         assert ((input.shape[1] - 20) % 5 == 0)
         bbox_count = (input.shape[1] - 20) // 5
 
         # target: [cell_pos_x, cell_pos_y, width, height, 1.0] * 7 * 7
         object_gt_exist_mask = target[:, 4:5, :, :] == 1
-        input = torch.cat([torch.sigmoid(input[:, :bbox_count * 5, :, :]), input[:, :20, :, :]], dim=1)
+        # input = torch.cat([torch.sigmoid(input[:, :bbox_count * 5, :, :]), input[:, :20, :, :]], dim=1)
+        input = torch.sigmoid(input)
         # input = torch.cat([target[:, :5, :, :], target[:, :5, :, :], target[:, -20:, :, :]], dim=1)
 
         ## !TODO Important: we only support 2 bbox predicators!
-        resp_indicies = YoloLoss.get_responsible_bbox_predictor_indicies(input, target, bbox_count)  # [B * 1 * 7 * 7]
+        resp_indicies = self.get_responsible_bbox_predictor_indicies(input, target, bbox_count)  # [B * 1 * 7 * 7]
         resp_indicies = torch.unsqueeze(resp_indicies, 1).repeat(1, 1, 5, 1, 1)  # [B * 1 * 5 * 7 * 7]
 
         bboxes = []
@@ -33,8 +49,6 @@ class YoloLoss(Module):
             bboxes.append(torch.unsqueeze(current_box, 1))
         merged_bbox = torch.cat(bboxes, dim=1)  # [B * 2 * 5 * 7 * 7]
 
-        loss = 0
-
         # print("\t* First predictor: ", torch.sum(resp_indicies == 0), ", Second predictor: ", torch.sum(resp_indicies == 1))
 
         responsible_predictor = torch.squeeze(torch.gather(merged_bbox, 1, resp_indicies), 1)
@@ -42,22 +56,19 @@ class YoloLoss(Module):
 
         # # ! TODO: iterate over xy_loss and find out that object_gt_exist_mask works well
         xy_loss = torch.square(responsible_predictor[:, :2, :, :] - target[:, :2, :, :]) * object_gt_exist_mask
-        loss += self.lambda_coord * torch.sum(xy_loss)
+
         if self.debug: print("\nxy_loss ", torch.sum(xy_loss))
 #         for idx in range(input.shape[0]):
 #             print("idx[%d] xy_loss: " % idx, torch.sum(xy_loss[idx, :, :, :]).clone().detach().cpu().numpy().item(), end=' ')
 #         print()
 
         wh_loss = torch.square(torch.sqrt(responsible_predictor[:, 2:4, :, :]) - torch.sqrt(target[:, 2:4, :, :])) * object_gt_exist_mask
-        loss += self.lambda_coord * torch.sum(wh_loss)
         if self.debug: print("wh_loss: ", torch.sum(wh_loss))
         if self.debug: print("Responsible predictors: ", responsible_predictor.shape)
         if self.debug: print("Nonresponsible predictors: ", nonresp_predictor.shape)
 
         conf_obj_loss = torch.square(responsible_predictor[:, 4:5, :, :] - target[:, 4:5, :, :])
         conf_noobj_loss = torch.square(nonresp_predictor[:, 4:5, :, :] - target[:, 4:5, :, :])
-        loss += torch.sum(conf_obj_loss)
-        loss += self.lambda_noobj * torch.sum(conf_noobj_loss)
 
         if self.debug: print("conf_obj_loss: ", torch.sum(conf_obj_loss))
         if self.debug: print("conf_noobj_loss: ", torch.sum(conf_noobj_loss))
@@ -70,28 +81,29 @@ class YoloLoss(Module):
 
         # CE-version Loss for classes (improved)
         # print("\t*", masked_target_classes.shape)
-        ce_loss = cross_entropy(masked_input_classes, torch.argmax(masked_target_classes, 1))
-        loss += ce_loss
-
         # MSE-version Loss for classes (paper)
-        # class_loss = torch.square(input[:, -20:, :, :] - target[:, -20:, :, :]) * object_gt_exist_mask
+        class_loss = torch.square(input[:, -20:, :, :] - target[:, -20:, :, :]) * object_gt_exist_mask
         # loss += torch.sum(class_loss)
         # if self.debug: print("class_loss: ", torch.sum(class_loss))
 
         # if self.debug: print("** total loss: ", loss, " **")
         
-        return loss
+        return (
+            self.lambda_coord * torch.sum(xy_loss),
+            self.lambda_coord * torch.sum(wh_loss),
+            torch.sum(conf_obj_loss),
+            self.lambda_noobj * torch.sum(conf_noobj_loss),
+            torch.sum(class_loss)
+        )
 
-
-    
-    @staticmethod
-    def get_responsible_bbox_predictor_indicies(input: Tensor, target: Tensor, bboxes: int) -> Tensor:
+    @classmethod
+    def get_responsible_bbox_predictor_indicies(cls, input: Tensor, target: Tensor, bboxes: int) -> Tensor:
         ious = []
         for bbox_id in range(bboxes):
             current_box_xywh = input[:, 5 * bbox_id:5 * (bbox_id + 1) - 1, :, :]
             label_xywh = target[:, :4, :, :]
 
-            iou = YoloLoss.get_iou_xywh(current_box_xywh, label_xywh)
+            iou = cls.get_iou_xywh(current_box_xywh, label_xywh)
             iou = torch.unsqueeze(iou, 1)  # iou -> (B * 1 * 7 * 7)
             ious.append(iou)
 
