@@ -7,7 +7,10 @@ import os
 import math
 
 from PIL import Image
+import cv2
 import numpy as np
+
+import albumentations as A
 
 class VOCYOLOAnnotator(object):
     def __init__(self, annotation_root, image_root, model_cells=7, extension='jpg'):
@@ -59,11 +62,11 @@ class VOCYOLOAnnotator(object):
                     # dynamic range tricks
                     # changes dynamic range from 0.0 to 7.0 and do floor()
                     # -> results 0, 1, 2, 3, 4, 5, 6!
-                    cell_idx_x = math.floor(xcenter_norm * self.model_cells)
-                    cell_idx_y = math.floor(ycenter_norm * self.model_cells)
+                    cell_idx_x = int(xcenter_norm * self.model_cells)
+                    cell_idx_y = int(ycenter_norm * self.model_cells)
 
-                    cell_pos_x_norm = (xcenter_norm - (cell_idx_x / self.model_cells))
-                    cell_pos_y_norm = (ycenter_norm - (cell_idx_y / self.model_cells))
+                    cell_pos_x_norm = (xcenter_norm * self.model_cells - cell_idx_x)
+                    cell_pos_y_norm = (ycenter_norm * self.model_cells - cell_idx_y)
 
                     objects.append(
                         [object_id, cell_idx_x, cell_idx_y, cell_pos_x_norm, cell_pos_y_norm, width_norm, height_norm])
@@ -74,11 +77,16 @@ class VOCYOLOAnnotator(object):
 
 
 class VOCYolo(torch.utils.data.Dataset):
-    def __init__(self, labels, annotations, boxes=2, grid_size=7, transform=None):
+    def __init__(self, labels, annotations, boxes=2, grid_size=7, transform=None, augmentations=None):
         super(VOCYolo, self).__init__()
         self.labels = labels
         self.annotations = annotations
         self.transform = transform
+        self.augmentations = None
+        if augmentations is not None:
+            self.augmentations = A.Compose(augmentations, bbox_params=A.BboxParams(
+                format='albumentations', label_fields=['category_ids']
+            ))
         self.boxes = boxes
         self.grid_size = grid_size
         self.classes = 20  # fixed as it's VOC dataset!
@@ -89,10 +97,45 @@ class VOCYolo(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         filepath, annotation = self.annotations[idx]
-        image = Image.open(filepath).convert('RGB')  # case if image is grayscale
-        label = torch.zeros((5 + self.classes, self.grid_size, self.grid_size), dtype=torch.float)
+
+        if self.augmentations is not None:
+            image = cv2.imread(filepath, cv2.IMREAD_COLOR)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            # x, y, width, height
+            yolo_bboxes = [
+                [(cell_idx_x + cell_pos_x) / 7, (cell_idx_y + cell_pos_y) / 7, width, height]
+                for (class_id, cell_idx_x, cell_idx_y, cell_pos_x, cell_pos_y, width, height) in annotation
+            ]
+            # x_min, y_min, x_max, y_max
+            bboxes = [
+                [max(x - w / 2, 0), max(y - h / 2, 0), min(x + w / 2, 1), min(y + h / 2, 1)]
+                for (x, y, w, h) in yolo_bboxes
+            ]
+
+            category_ids = [ class_id for (class_id, cell_idx_x, cell_idx_y, cell_pos_x, cell_pos_y, width, height) in annotation ]
+            transform_result = self.augmentations(image=image, bboxes=bboxes, category_ids=category_ids)
+            image_a, bboxes_a, categories_a = transform_result['image'], transform_result['bboxes'], transform_result['category_ids']
+            image = Image.fromarray(image_a)
+            # albumentations to yolo
+            yolo_bboxes = [
+                [xmin + ((xmax - xmin) / 2), ymin + ((ymax - ymin) / 2), xmax - xmin, ymax - ymin]
+                for (xmin, ymin, xmax, ymax) in bboxes_a
+            ]
+
+            yolo_bboxes_annotation = [
+                # cell_idx_x, cell_idx_y, cell_pos_x, cell_pos_y, width, height
+                [min(int(x * 7), 6), min(int(y * 7), 6), x * 7 - int(x * 7), y * 7 - int(y * 7), w, h]
+                for (x, y, w, h) in yolo_bboxes
+            ]
+            annotation = [[categories_a[i], *yolo_bboxes_annotation[i]] for i in range(len(yolo_bboxes_annotation))]
+        else:
+            image = Image.open(filepath).convert('RGB')  # case if image is grayscale
+
+        # annotation = [[0, 3, 3, 0.5, 0.5, 0.95, 0.95] for _ in range(len(annotation))]
 
         # fill label
+        label = torch.zeros((5 + self.classes, self.grid_size, self.grid_size), dtype=torch.float)
         for (class_id, cell_idx_x, cell_idx_y, cell_pos_x, cell_pos_y, width, height) in annotation:
             if label[4, cell_idx_y, cell_idx_x] != 1.0:
                 label[:5, cell_idx_y, cell_idx_x] = torch.from_numpy(

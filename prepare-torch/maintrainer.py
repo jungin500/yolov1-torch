@@ -18,6 +18,8 @@ from maintrainer.dataset import VOCYOLOAnnotator, VOCYolo
 from maintrainer.loss import YoloLoss
 from torchsummary import summary
 
+import albumentations as A
+
 from tqdm.auto import tqdm
 
 if __name__ == '__main__':
@@ -70,13 +72,18 @@ if __name__ == '__main__':
         annotator.labels,
         annotations,
         transform=transforms.Compose([
-            transforms.Resize((448, 448)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.4547857, 0.4349471, 0.40525291],
                 std=[0.12003352, 0.12323549, 0.1392444]
             )
-        ])
+        ]),
+        augmentations=[
+            A.PadIfNeeded(min_height=448, min_width=448),
+            A.RandomCrop(width=448, height=448),
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(p=0.2)
+        ]
     )
 
     trainlen, validlen = int(len(dataset) * 0.9), len(dataset) - int(len(dataset) * 0.9)
