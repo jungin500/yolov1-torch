@@ -158,8 +158,10 @@ def draw_center_cell_object_output(image, annotator, output, confidence_threshol
             for bbox_idx in range(bboxes):
                 current_predictor = output[5 * (bbox_idx):5 * (bbox_idx + 1), cell_idx_y, cell_idx_x]
                 (cell_pos_x, cell_pos_y, width, height, confidence) = torch.sigmoid(
-                    torch.from_numpy(current_predictor[:5])).numpy()
-                class_id = np.argmax(output[5 * bboxes:, cell_idx_y, cell_idx_x])
+                    torch.from_numpy(current_predictor)).numpy()
+
+                class_prob = torch.sigmoid(torch.from_numpy(output[5 * bboxes:, cell_idx_y, cell_idx_x])).numpy()
+                class_id = np.argmax(class_prob)
 
                 if confidence < confidence_threshold:
                     continue
@@ -170,7 +172,7 @@ def draw_center_cell_object_output(image, annotator, output, confidence_threshol
                 oymin, oymax = obj_center_y - (height / 2), obj_center_y + (height / 2)
 
                 bbox_coordinates.append([oxmin, oymin, oxmax, oymax])
-                bbox_scores.append(confidence)
+                bbox_scores.append(class_prob[class_id] * confidence)
                 bbox_classes.append(class_id)
 
     if len(bbox_coordinates) > 0:

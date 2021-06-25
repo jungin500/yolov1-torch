@@ -35,8 +35,8 @@ class YoloVisibleLoss(Module):
 
         # target: [cell_pos_x, cell_pos_y, width, height, 1.0] * 7 * 7
         object_gt_exist_mask = target[:, 4:5, :, :] == 1
-        # input = torch.cat([torch.sigmoid(input[:, :bbox_count * 5, :, :]), input[:, :20, :, :]], dim=1)
-        input = torch.sigmoid(input)
+        input = torch.cat([torch.sigmoid(input[:, :bbox_count * 5, :, :]), input[:, -20:, :, :]], dim=1)
+        # input = torch.sigmoid(input)
         # input = torch.cat([target[:, :5, :, :], target[:, :5, :, :], target[:, -20:, :, :]], dim=1)
 
         ## !TODO Important: we only support 2 bbox predicators!
@@ -68,7 +68,7 @@ class YoloVisibleLoss(Module):
         if self.debug: print("Nonresponsible predictors: ", nonresp_predictor.shape)
 
         conf_obj_loss = torch.square(responsible_predictor[:, 4:5, :, :] - target[:, 4:5, :, :])
-        conf_noobj_loss = torch.square(nonresp_predictor[:, 4:5, :, :] - target[:, 4:5, :, :])
+        conf_noobj_loss = torch.square(nonresp_predictor[:, 4:5, :, :])
 
         if self.debug: print("conf_obj_loss: ", torch.sum(conf_obj_loss))
         if self.debug: print("conf_noobj_loss: ", torch.sum(conf_noobj_loss))
@@ -82,7 +82,7 @@ class YoloVisibleLoss(Module):
         # CE-version Loss for classes (improved)
         # print("\t*", masked_target_classes.shape)
         # MSE-version Loss for classes (paper)
-        class_loss = torch.square(input[:, -20:, :, :] - target[:, -20:, :, :]) * object_gt_exist_mask
+        class_loss = torch.square(torch.sigmoid(input[:, -20:, :, :]) - target[:, -20:, :, :]) * object_gt_exist_mask
         # loss += torch.sum(class_loss)
         # if self.debug: print("class_loss: ", torch.sum(class_loss))
 
