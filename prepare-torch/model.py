@@ -55,7 +55,7 @@ class YoloFinalLayer(Module):
         x = x.view(-1, 50176)
         x = self.classifier0(x)
         self.act(x)
-        x = self.dropout(x)
+        # x = self.dropout(x)
         x = self.classifier1(x)
         x = x.view(-1, 30, 7, 7)
         return x

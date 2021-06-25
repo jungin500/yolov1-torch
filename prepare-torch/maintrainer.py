@@ -61,10 +61,10 @@ if __name__ == '__main__':
     device = torch.device('cuda') if args.gpu else torch.device('cpu')
 
     annotator = VOCYOLOAnnotator(
-        # annotation_root=r'C:\Dataset\VOCdevkit\VOC2008\Annotations',
-        # image_root=r'C:\Dataset\VOCdevkit\VOC2008\JPEGImages'
-        annotation_root='/media/jungin500/windows-10/Dataset/VOCdevkit/VOC2008/Annotations',
-        image_root='/media/jungin500/windows-10/Dataset/VOCdevkit/VOC2008/JPEGImages'
+        annotation_root=r'C:\Dataset\VOCdevkit\VOC2008\Annotations',
+        image_root=r'C:\Dataset\VOCdevkit\VOC2008\JPEGImages'
+        # annotation_root='/media/jungin500/windows-10/Dataset/VOCdevkit/VOC2008/Annotations',
+        # image_root='/media/jungin500/windows-10/Dataset/VOCdevkit/VOC2008/JPEGImages'
     )
 
     annotations = annotator.parse_annotation()
@@ -110,6 +110,7 @@ if __name__ == '__main__':
         pretrainer = YOLOv1Pretrainer(classes=1000)
         pretrainer.load_state_dict(c_model_state_dict)
         model = YOLOv1(pretrainer).to(device).float()
+        # model.enable_features()
         del pretrainer
         torch.cuda.empty_cache()
         print("Purged unused cuda cache")
@@ -118,7 +119,8 @@ if __name__ == '__main__':
 
     # summary(model, input_size=(3, 448, 448), batch_size=args.batch_size, device=device.type)
 
-    criterion = YoloLoss(lambda_coord=5, lambda_noobj=0.5)
+    # criterion = YoloLoss(lambda_coord=5, lambda_noobj=0.5)
+    visible_criterion = YoloLoss(lambda_coord=5, lambda_noobj=0.5, visible_output=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     summary_writer = SummaryWriter(log_dir=os.path.join('logs', run_name))
@@ -142,24 +144,33 @@ if __name__ == '__main__':
     else:
         epoch_range = range(total_epochs)
 
-    # scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler()
 
-    epoch_val_accuracies = []
+    epoch_val_losses = []
     exit_reason = 0
     for epoch in epoch_range:
-        if epoch % 5 == 0:
-            for g in optimizer.param_groups:
-                g['lr'] = args.learning_rate * np.exp(-0.1 * epoch // 5)
-        
-        print("Learning rate set to %.8f (" % optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['lr'], ")")
+        # if epoch % 5 == 0:
+        #     for g in optimizer.param_groups:
+        #         # g['lr'] = args.learning_rate * np.exp(-0.1 * epoch // 5)
+        #         g['lr'] *= 0.95
+        #
+        # print("Learning rate set to %.8f (" % optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['lr'], ")")
 
         summary_writer.add_scalar('Hyperparameters/Learning Rate', optimizer.param_groups[0]['lr'], epoch)
-        tr = tqdm(enumerate(train_dataloader), total=len(train_dataloader), ncols=160,
+        tr = tqdm(enumerate(train_dataloader), total=len(train_dataloader), ncols=240,
                   desc='[Epoch %04d/%04d] Spawning Workers' % (epoch + 1, total_epochs))
 
         class_accuracies = []
         class_top_5_accuracies = []
         losses = []
+        xy_losses = []
+        wh_losses = []
+        conf_obj_losses = []
+        conf_noobj_losses = []
+        class_losses = []
+        class_accuracies = []
+        class_top_5_accuracies = []
+
         model.train()
         for i, (image, label) in tr:
             if args.limit_batch and i > LIMIT_BATCH_SIZE:
@@ -167,45 +178,58 @@ if __name__ == '__main__':
             image = image.cuda(non_blocking=True)
             label = label.cuda(non_blocking=True)
 
-            # with torch.cuda.amp.autocast():
             output = model(image)
-            loss = criterion(output, label)
-            # scaler.scale(loss).backward()
-            # scaler.step(optimizer)
-            # scaler.update()
-            loss.backward()
+            with torch.cuda.amp.autocast(enabled=True):
+                xy_loss, wh_loss, conf_obj_loss, conf_noobj_loss, class_loss = visible_criterion(output, label)
+                loss = torch.sum(torch.stack([xy_loss, wh_loss, conf_obj_loss, conf_noobj_loss, class_loss]))
+            scaler.scale(loss).backward()
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.no_grad():
-                class_accuracy = torch.sum(
-                    torch.eq(
-                        torch.argmax(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1),
-                        torch.argmax(label, dim=1)
-                    ) * (label[:, 4, :, :] == 1)
-                ) / torch.sum(label[:, 4:5, :, :])
-                class_top_5_accuracy = torch.sum(
-                    torch.any(
+            if i % 10 == 0:
+                with torch.no_grad():
+                    class_accuracy = torch.sum(
                         torch.eq(
-                            torch.argsort(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1)[:, -5:, :, :],
-                            torch.argmax(label, dim=1, keepdim=True).repeat(1, 5, 1, 1)
-                        ),
-                        dim=1
-                    ) * (label[:, 4, :, :] == 1)
-                ) / torch.sum(label[:, 4:5, :, :])
-                class_accuracies.append(class_accuracy.item())
-                class_top_5_accuracies.append(class_top_5_accuracy.item())
-                losses.append(loss.item())
-                summary_writer.add_scalar('Training/Batch Loss', losses[-1], epoch * len(train_dataloader) + i)
-                # summary_writer.add_scalar('Training/Batch Accuracy', accuracies[-1], epoch * len(train_dataloader) + i)
+                            torch.argmax(torch.sigmoid(output[:, -20:, :, :]), dim=1),
+                            torch.argmax(label, dim=1)
+                        ) * (label[:, 4, :, :] == 1)
+                    ) / torch.sum(label[:, 4:5, :, :])
+                    class_top_5_accuracy = torch.sum(
+                        torch.any(
+                            torch.eq(
+                                torch.argsort(torch.sigmoid(output[:, -20:, :, :]), dim=1)[:, -5:, :, :],
+                                torch.argmax(label, dim=1, keepdim=True).repeat(1, 5, 1, 1)
+                            ),
+                            dim=1
+                        ) * (label[:, 4, :, :] == 1)
+                    ) / torch.sum(label[:, 4:5, :, :])
 
-                tr.set_description(
-                    "[Epoch %04d/%04d][Image Batch %04d/%04d] Training Loss: %.4f CLS1 Acc: %.4f CLS5 Acc: %.4f" %
-                    (epoch + 1, total_epochs, i, len(train_dataloader), np.mean(losses), np.mean(class_accuracies), np.mean(class_top_5_accuracies))
-                )
+                    class_accuracies.append(class_accuracy.item())
+                    class_top_5_accuracies.append(class_top_5_accuracy.item())
+                    xy_losses.append(xy_loss.item())
+                    wh_losses.append(wh_loss.item())
+                    conf_obj_losses.append(conf_obj_loss.item())
+                    conf_noobj_losses.append(conf_noobj_loss.item())
+                    class_losses.append(class_loss.item())
+                    losses.append(loss.item())
 
-                if np.isnan(np.mean(losses)):
-                    break
+                    summary_writer.add_scalar('Training/Batch Loss', losses[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch CLS Accuracy', class_accuracies[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch CLS Top-5 Accuracy', class_top_5_accuracies[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch Loss/XY Loss', xy_losses[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch Loss/WH Loss', wh_losses[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch Loss/CONF Loss', conf_obj_losses[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch Loss/CONF NOOBJ Loss', conf_noobj_losses[-1], epoch * len(train_dataloader) + i)
+                    summary_writer.add_scalar('Training/Batch Loss/CLS Loss', class_losses[-1], epoch * len(train_dataloader) + i)
+
+                    tr.set_description(
+                        "[Epoch %04d/%04d][Image Batch %04d/%04d] Training Loss: %.4f CLS1 Acc: %.4f CLS5 Acc: %.4f xy_loss: %.4f wh_loss: %.4f conf_obj_loss: %.4f conf_noobj_loss: %.4f class_loss: %.4f" %
+                        (epoch + 1, total_epochs, i, len(train_dataloader), np.mean(losses), np.mean(class_accuracies), np.mean(class_top_5_accuracies), np.average(xy_losses),
+                    np.average(wh_losses), np.average(conf_obj_losses), np.average(conf_noobj_losses), np.average(class_losses))
+                    )
+
+                    if np.isnan(np.mean(losses)):
+                        break
 
         if not args.limit_batch:
             train_loss_value = np.mean(losses)
@@ -220,48 +244,70 @@ if __name__ == '__main__':
             break
 
         if not args.limit_batch:
-            vl = tqdm(enumerate(valid_dataloader), total=len(valid_dataloader), ncols=160,
+            vl = tqdm(enumerate(valid_dataloader), total=len(valid_dataloader), ncols=240,
                       desc='[Epoch %04d/%04d] Spawning Workers' % (epoch + 1, total_epochs))
 
             class_accuracies = []
             class_top_5_accuracies = []
             losses = []
+            xy_losses = []
+            wh_losses = []
+            conf_obj_losses = []
+            conf_noobj_losses = []
+            class_losses = []
             model.eval()
-            for i, (image, label) in vl:
-                if args.limit_batch and i > LIMIT_BATCH_SIZE:
-                    break
-                if device.type != label.device.type:
-                    image = image.to(device)
-                    label = label.to(device)
+            with torch.no_grad():
+                for i, (image, label) in vl:
+                    if args.limit_batch and i > LIMIT_BATCH_SIZE:
+                        break
+                    if device.type != label.device.type:
+                        image = image.to(device)
+                        label = label.to(device)
 
-                output = model(image)
-                loss = criterion(output, label)
-                class_accuracy = torch.sum(
-                    torch.eq(
-                        torch.argmax(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1),
-                        torch.argmax(label, dim=1)
-                    ) * (label[:, 4, :, :] == 1)
-                ) / torch.sum(label[:, 4:5, :, :])
-                class_top_5_accuracy = torch.sum(
-                    torch.any(
+                    output = model(image)
+                    # loss = criterion(output, label)
+                    xy_loss, wh_loss, conf_obj_loss, conf_noobj_loss, class_loss = visible_criterion(output, label)
+                    loss = torch.sum(torch.stack([xy_loss, wh_loss, conf_obj_loss, conf_noobj_loss, class_loss]))
+                    class_accuracy = torch.sum(
                         torch.eq(
-                            torch.argsort(torch.log_softmax(output[:, -20:, :, :], dim=1), dim=1)[:, -5:, :, :],
-                            torch.argmax(label, dim=1, keepdim=True).repeat(1, 5, 1, 1)
-                        ),
-                        dim=1
-                    ) * (label[:, 4, :, :] == 1)
-                ) / torch.sum(label[:, 4:5, :, :])
-                class_accuracies.append(class_accuracy.item())
-                class_top_5_accuracies.append(class_top_5_accuracy.item())
-                losses.append(loss.item())
+                            torch.argmax(torch.sigmoid(output[:, -20:, :, :]), dim=1),
+                            torch.argmax(label, dim=1)
+                        ) * (label[:, 4, :, :] == 1)
+                    ) / torch.sum(label[:, 4:5, :, :])
+                    class_top_5_accuracy = torch.sum(
+                        torch.any(
+                            torch.eq(
+                                torch.argsort(torch.sigmoid(output[:, -20:, :, :]), dim=1)[:, -5:, :, :],
+                                torch.argmax(label, dim=1, keepdim=True).repeat(1, 5, 1, 1)
+                            ),
+                            dim=1
+                        ) * (label[:, 4, :, :] == 1)
+                    ) / torch.sum(label[:, 4:5, :, :])
 
-                vl.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Validation Loss: %.4f, CLS1 Acc: %.4f CLS5 Acc: %.4f" % (
-                    epoch + 1, total_epochs, i, len(valid_dataloader), np.mean(losses), np.mean(class_accuracies), np.mean(class_top_5_accuracies)))
+                    class_accuracies.append(class_accuracy.item())
+                    class_top_5_accuracies.append(class_top_5_accuracy.item())
+                    losses.append(loss.item())
+                    xy_losses.append(xy_loss.item())
+                    wh_losses.append(wh_loss.item())
+                    conf_obj_losses.append(conf_obj_loss.item())
+                    conf_noobj_losses.append(conf_noobj_loss.item())
+                    class_losses.append(class_loss.item())
+
+                    vl.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Validation Loss: %.4f, CLS1 Acc: %.4f CLS5 Acc: %.4f xy_loss: %.4f wh_loss: %.4f conf_obj_loss: %.4f conf_noobj_loss: %.4f class_loss: %.4f" % (
+                        epoch + 1, total_epochs, i, len(valid_dataloader), np.mean(losses), np.mean(class_accuracies), np.mean(class_top_5_accuracies), np.average(xy_losses),
+                        np.average(wh_losses), np.average(conf_obj_losses), np.average(conf_noobj_losses), np.average(class_losses))
+                    )
 
             for i in range(len(losses)):
                 summary_writer.add_scalar('Validation/Batch Loss', losses[i], epoch * len(valid_dataloader) + i)
                 summary_writer.add_scalar('Validation/Batch CLS Accuracy', class_accuracies[i], epoch * len(valid_dataloader) + i)
                 summary_writer.add_scalar('Validation/Batch CLS Top-5 Accuracy', class_top_5_accuracies[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch Loss', losses[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch Loss/XY Loss', xy_losses[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch Loss/WH Loss', wh_losses[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch Loss/CONF Loss', conf_obj_losses[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch Loss/CONF NOOBJ Loss', conf_noobj_losses[i], epoch * len(valid_dataloader) + i)
+                summary_writer.add_scalar('Validation/Batch Loss/CLS Loss', class_losses[i], epoch * len(valid_dataloader) + i)
 
             val_loss_value = np.mean(losses)
             val_acc_value = np.mean(class_accuracies)
@@ -271,13 +317,13 @@ if __name__ == '__main__':
             summary_writer.add_scalar('Validation/Epoch Accuracy', val_acc_value, epoch)
             summary_writer.add_scalar('Validation/Epoch Top-5 Accuracy', val_acc_t5_value, epoch)
 
-            if not epoch_val_accuracies or np.max(epoch_val_accuracies) < val_acc_value:
+            if not epoch_val_losses or np.min(epoch_val_losses) > val_loss_value:
                 if args.no_checkpoint:
                     print("[Epoch %04d/%04d] Checkpoint save feature disabled" % (epoch + 1, args.epochs))
                 else:
-                    if not os.path.isdir('.checkpoints'):
-                        os.mkdir('.checkpoints')
-                    save_filename = os.path.join('.checkpoints',
+                    if not os.path.isdir(r'D:\yolov1-checkpoints'):
+                        os.mkdir(r'D:\yolov1-checkpoints')
+                    save_filename = os.path.join(r'D:\yolov1-checkpoints',
                                                  '%s-epoch%04d-train_loss%.6f-val_loss%.6f-val_acc%.6f-val_acct5%.6f.zip' % (
                                                  run_name, epoch, train_loss_value, val_loss_value, val_acc_value, val_acc_t5_value))
                     torch.save({
@@ -288,7 +334,7 @@ if __name__ == '__main__':
                     }, save_filename)
                     print("[Epoch %04d/%04d] Saved checkpoint %s" % (epoch + 1, args.epochs, save_filename))
 
-            epoch_val_accuracies.append(val_acc_value)
+            epoch_val_losses.append(val_loss_value)
 
         if exit_reason != 0:
             exit(-1)
