@@ -1,0 +1,3 @@
+# Assume PyTorch is installed
+lightning==1.8.6
+torchmetrics==0.9.1
