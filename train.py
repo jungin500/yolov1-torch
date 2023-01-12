@@ -140,7 +140,7 @@ if __name__ == '__main__':
                    ) != 0, "Put wandb token in --wandb-token argument!"
 
         import wandb
-        wandb.login(key=args.wandb_toen)
+        wandb.login(key=args.wandb_token)
 
     model = YOLOv1(pretrain_mode=True, )
     lit_model = YOLOPretrainLitModel(
