@@ -141,6 +141,7 @@ if __name__ == '__main__':
 
         import wandb
         wandb.login(key=args.wandb_token)
+        wandb.config.update(args)
 
     model = YOLOv1(pretrain_mode=True, )
     lit_model = YOLOPretrainLitModel(
