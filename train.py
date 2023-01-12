@@ -90,7 +90,12 @@ class YOLOPretrainLitModel(LightningModule):
         self.val_acc.update(pred, y)
 
     def validation_epoch_end(self, outputs):
-        self.log('val/acc_epoch', self.val_acc.compute(), prog_bar=True)
+        self.log(
+            'val/acc_epoch',
+            self.val_acc.compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
         self.val_acc.reset()
 
 
@@ -119,10 +124,6 @@ def parse_args():
     parser.add_argument('--fp16',
                         action='store_true',
                         help='Toggle FP16 training')
-    parser.add_argument('--wandb-token',
-                        type=str,
-                        default='',
-                        help='Wandb token for login')
     parser.add_argument('--no-wandb',
                         action='store_true',
                         help='Disable wandb integration')
@@ -134,14 +135,6 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
-
-    if not args.no_wandb:
-        assert len(args.wandb_token
-                   ) != 0, "Put wandb token in --wandb-token argument!"
-
-        import wandb
-        wandb.login(key=args.wandb_token)
-        wandb.config.update(args)
 
     model = YOLOv1(pretrain_mode=True, )
     lit_model = YOLOPretrainLitModel(
