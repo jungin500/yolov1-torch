@@ -111,6 +111,14 @@ def parse_args():
                         default=4,
                         type=int,
                         help='Num. of dataloader worker processes')
+    parser.add_argument('-d',
+                        '--devices',
+                        default=1,
+                        type=int,
+                        help='Num. of GPU devices to train')
+    parser.add_argument('--fp16',
+                        action='store_true',
+                        help='Toggle FP16 training')
     parser.add_argument('--wandb-token',
                         type=str,
                         default='',
@@ -132,7 +140,7 @@ if __name__ == '__main__':
                    ) != 0, "Put wandb token in --wandb-token argument!"
 
         import wandb
-        wandb.login(key=args.wandb_token)
+        wandb.login(key=args.wandb_toen)
 
     model = YOLOv1(pretrain_mode=True, )
     lit_model = YOLOPretrainLitModel(
@@ -146,10 +154,14 @@ if __name__ == '__main__':
     trainer = Trainer(
         logger=True if args.no_wandb else WandbLogger(
             project="yolov1-imagenet"),
-        precision=32,
+        precision=16 if args.fp16 else 32,
         max_epochs=200,
         accelerator='gpu',
-        devices=1,
+        devices=args.devices,
+        # ddp_spawn is default ddp strategy
+        # but it is not recommended
+        # See: https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
+        strategy='ddp' if args.devices > 1 else None,
         callbacks=[
             # EarlyStopping('val/acc_epoch', patience=5),
             ModelCheckpoint(
