@@ -54,6 +54,8 @@ def build_model(arch: dict, disable_bn=False) -> nn.Module:
             base_cls = nn.Dropout
         elif module_type == 'avgpool':
             base_cls = nn.AvgPool2d
+        elif module_type == 'identity':
+            base_cls = nn.Identity
         else:
             warnings.warn("Base class not supported: {}".format(module_type))
 
