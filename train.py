@@ -184,13 +184,13 @@ if __name__ == '__main__':
         # See: https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
         strategy='ddp' if args.devices > 1 else None,
         callbacks=[
-            # EarlyStopping('val/acc_top5_epoch', patience=5),
+            # EarlyStopping('val/acc_top5', patience=5),
             ModelCheckpoint(
                 dirpath='./checkpoints',
                 auto_insert_metric_name=False,
                 filename=
                 'yolov1-backbone-epoch{epoch:04d}-step{step:06d}-val_acc_top5{val_acc_top5:.2f}',
-                monitor='val/acc_top5_epoch',
+                monitor='val/acc_top5',
                 mode='max',
             )
         ])
