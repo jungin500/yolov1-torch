@@ -17,14 +17,13 @@ class YOLOPretrainLitModel(LightningModule):
 
     def __init__(
         self,
-        yolo_model: YOLOv1,
         batch_size: int,
         learning_rate: int,
         num_workers: int,
         dataset_root: str,
     ):
         super().__init__()
-        self.yolo_model = yolo_model
+        self.yolo_model = YOLOv1(pretrain_mode=True, )
         self.yolo_model.pretrain_mode = True
 
         self.batch_size = batch_size
@@ -70,6 +69,9 @@ class YOLOPretrainLitModel(LightningModule):
                           shuffle=False,
                           num_workers=self.num_workers)
 
+    def test_dataloader(self):
+        return self.val_dataloader()
+
     def configure_optimizers(self):
         return optim.Adam(self.yolo_model.parameters(), lr=self.learning_rate)
 
@@ -85,12 +87,21 @@ class YOLOPretrainLitModel(LightningModule):
         return loss
 
     def training_epoch_end(self, outputs):
-        self.log('train/acc_epoch', self.train_acc.compute(), sync_dist=True)
-        self.log('train/acc_top5_epoch',
-                 self.train_acc_top5.compute(),
-                 sync_dist=True)
+        train_acc_epoch = self.train_acc.compute()
+        train_acc_top5_epoch = self.train_acc_top5.compute()
         self.train_acc.reset()
         self.train_acc_top5.reset()
+
+        self.log(
+            'train/acc_epoch',
+            train_acc_epoch,
+            sync_dist=True,
+        )
+        self.log(
+            'train/acc_top5_epoch',
+            train_acc_top5_epoch,
+            sync_dist=True,
+        )
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
@@ -99,20 +110,22 @@ class YOLOPretrainLitModel(LightningModule):
         self.val_acc_top5.update(pred, y)
 
     def validation_epoch_end(self, outputs):
-        self.log(
-            'val/acc_epoch',
-            self.val_acc.compute(),
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            'val/acc_top5_epoch',
-            self.val_acc_top5.compute(),
-            prog_bar=True,
-            sync_dist=True,
-        )
+        val_acc = self.val_acc.compute()
+        val_acc_top5 = self.val_acc_top5.compute()
         self.val_acc.reset()
         self.val_acc_top5.reset()
+
+        self.log(
+            'val/acc',
+            val_acc,
+            sync_dist=True,
+        )
+        self.log(
+            'val/acc_top5',
+            val_acc_top5,
+            prog_bar=True,
+            sync_dist=True,
+        )
 
 
 def parse_args():
@@ -152,9 +165,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
 
-    model = YOLOv1(pretrain_mode=True, )
     lit_model = YOLOPretrainLitModel(
-        yolo_model=model,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         num_workers=args.num_workers,
@@ -173,11 +184,13 @@ if __name__ == '__main__':
         # See: https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
         strategy='ddp' if args.devices > 1 else None,
         callbacks=[
-            # EarlyStopping('val/acc_epoch', patience=5),
+            # EarlyStopping('val/acc_top5_epoch', patience=5),
             ModelCheckpoint(
                 dirpath='./checkpoints',
-                filename='yolov1-backbone-{valid_acc_epoch:.2f}',
-                monitor='val/acc_epoch',
+                auto_insert_metric_name=False,
+                filename=
+                'yolov1-backbone-epoch{epoch:04d}-step{step:06d}-val_acc_top5{val_acc_top5:.2f}',
+                monitor='val/acc_top5_epoch',
                 mode='max',
             )
         ])
