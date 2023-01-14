@@ -33,7 +33,9 @@ class YOLOPretrainLitModel(LightningModule):
         self.dataset_root = dataset_root
 
         self.train_acc = torchmetrics.Accuracy(num_classes=1000)
+        self.train_acc_top5 = torchmetrics.Accuracy(num_classes=1000, top_k=5)
         self.val_acc = torchmetrics.Accuracy(num_classes=1000)
+        self.val_acc_top5 = torchmetrics.Accuracy(num_classes=1000, top_k=5)
 
     def train_dataloader(self):
         dataset = ImageNet(self.dataset_root,
@@ -76,18 +78,25 @@ class YOLOPretrainLitModel(LightningModule):
         pred = self.yolo_model(x)
         loss = nn.functional.cross_entropy(pred, y)
         acc = self.train_acc(pred, y)
+        acc_top5 = self.train_acc_top5(pred, y)
         self.log('train/acc_step', acc)
+        self.log('train/acc_top5_step', acc_top5)
         self.log('train/loss', loss)
         return loss
 
     def training_epoch_end(self, outputs):
-        self.log('train/acc_epoch', self.train_acc.compute())
+        self.log('train/acc_epoch', self.train_acc.compute(), sync_dist=True)
+        self.log('train/acc_top5_epoch',
+                 self.train_acc_top5.compute(),
+                 sync_dist=True)
         self.train_acc.reset()
+        self.train_acc_top5.reset()
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         pred = self.yolo_model(x)
         self.val_acc.update(pred, y)
+        self.val_acc_top5.update(pred, y)
 
     def validation_epoch_end(self, outputs):
         self.log(
@@ -96,7 +105,14 @@ class YOLOPretrainLitModel(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+        self.log(
+            'val/acc_top5_epoch',
+            self.val_acc_top5.compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
         self.val_acc.reset()
+        self.val_acc_top5.reset()
 
 
 def parse_args():
