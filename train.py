@@ -73,7 +73,21 @@ class YOLOPretrainLitModel(LightningModule):
         return self.val_dataloader()
 
     def configure_optimizers(self):
-        return optim.Adam(self.yolo_model.parameters(), lr=self.learning_rate)
+        optimizer = optim.Adam(
+            params=self.yolo_model.parameters(),
+            lr=self.learning_rate,
+        )
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=optimizer,
+            mode='max',
+            patience=5,
+            threshold=1e-3,
+            cooldown=5,
+        )
+        return optimizer, {
+            "scheduler": scheduler,
+            "monitor": "val/acc_top5",
+        }
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -156,6 +170,9 @@ def parse_args():
     parser.add_argument('--no-wandb',
                         action='store_true',
                         help='Disable wandb integration')
+    parser.add_argument('--checkpoint',
+                        type=str,
+                        help='Resume training with checkpoint')
     parser.add_argument('dataset_root',
                         type=str,
                         help='ImageNet2012 dataset root path')
@@ -164,7 +181,7 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
-
+    
     lit_model = YOLOPretrainLitModel(
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
@@ -195,5 +212,8 @@ if __name__ == '__main__':
             )
         ])
 
-    trainer.fit(lit_model)
+    if args.checkpoint:
+        trainer.fit(lit_model, ckpt_path=args.checkpoint)
+    else:
+        trainer.fit(lit_model)
     print("Training sequence done.")
