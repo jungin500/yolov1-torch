@@ -267,3 +267,6 @@ wandb/
 checkpoints/
 dataset/
 k8s/
+lightning_logs/
+*.ckpt
+*.pth
