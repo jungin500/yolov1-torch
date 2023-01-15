@@ -17,9 +17,9 @@ TBD
 # Timeline
 - [X] Implement YOLO model
 - [X] Separate backbone,head from model
-- [ ] [Backbone] Implement ImageNet training pipeline
-- [ ] [Backbone] Fine-tuning hyperparameters
-- [ ] [Backbone] Train/Evaluate network for ~~a week~~ few days
+- [X] [Backbone] Implement ImageNet training pipeline
+- [X] [Backbone] Fine-tuning hyperparameters
+- [X] [Backbone] Train/Evaluate network for ~~a week~~ few days
 - [ ] [Head] Implement VOC2007/2012 training pipeline
 - [ ] [Head] Implement loss function
 - [ ] [Head] Fine-tuning hyperparameters
