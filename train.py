@@ -84,7 +84,8 @@ class YOLOPretrainLitModel(LightningModule):
             threshold=1e-3,
             cooldown=5,
         )
-        return optimizer, {
+        return {
+            "optimizer": optimizer,
             "scheduler": scheduler,
             "monitor": "val/acc_top5",
         }
@@ -181,7 +182,7 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
-    
+
     lit_model = YOLOPretrainLitModel(
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
