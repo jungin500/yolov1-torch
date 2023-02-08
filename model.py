@@ -2,6 +2,8 @@ import warnings
 import torch
 from torch import nn
 
+from detector import YoloDetector
+
 
 class ModuleBuilder:
 
@@ -44,6 +46,8 @@ def build_model(arch: dict, disable_bn=False) -> nn.Module:
             base_cls = nn.LeakyReLU
         elif module_type == 'softmax':
             base_cls = nn.Softmax
+        elif module_type == 'sigmoid':
+            base_cls = nn.Sigmoid
         elif module_type == 'bn':
             base_cls = nn.BatchNorm2d
         elif module_type == 'flatten':
@@ -54,6 +58,10 @@ def build_model(arch: dict, disable_bn=False) -> nn.Module:
             base_cls = nn.Dropout
         elif module_type == 'avgpool':
             base_cls = nn.AvgPool2d
+        elif module_type == 'reshape':
+            base_cls = YoloReshape
+        elif module_type == 'yololoss':
+            base_cls = YoloDetector
         elif module_type == 'identity':
             base_cls = nn.Identity
         else:
@@ -70,6 +78,16 @@ def build_model(arch: dict, disable_bn=False) -> nn.Module:
             builder = ModuleBuilder(base_cls)
         model.append(builder.build())
     return nn.Sequential(*model)
+
+
+class YoloReshape(torch.nn.Module):
+
+    def __init__(self, *target_shape):
+        super(YoloReshape, self).__init__()
+        self.target_shape = target_shape
+
+    def forward(self, x):
+        return torch.reshape(x, self.target_shape)
 
 
 class YOLOv1(torch.nn.Module):
@@ -152,7 +170,7 @@ class YOLOv1(torch.nn.Module):
             ["flatten", [1]],
             ["fc", [1024, 1000]],
         ]
-        head_arch = [
+        detection_head_arch = [
             # Fig.3 Row.5.2
             ["conv", [1024, 1024, (1, 1)]],
             ["bn", [1024]],
@@ -174,21 +192,41 @@ class YOLOv1(torch.nn.Module):
             ["dropout", 0.5],
             # # Fig.3 Row.8
             ["fc", [4096, 1470]],
+            ["reshape", [-1, 30, 7, 7]],
+            # Limit range to 0~1, xywhc, classes, all of them.
+            ["sigmoid", None]
         ]
 
         # original paper doesn't have bn implemented on.
         self.backbone = build_model(backbone_arch, disable_bn)
-        self.head = build_model(head_arch, disable_bn)
         self.pretrain_head = build_model(pretrain_head_arch, disable_bn)
+        self.detection_head = build_model(detection_head_arch, disable_bn)
+        self.yolo_detector = YoloDetector(
+            cell_size=7,
+            box_candidates=2,
+            num_classes=20,
+        )
         self.pretrain_mode = pretrain_mode
 
-    def forward(self, x):
+    def forward(self, x, label=None):
         x = self.backbone(x)
         if self.pretrain_mode:
+            assert label is None, "Label should not be supplied on pretrain mode"
             x = self.pretrain_head(x)
+            return x
         else:
-            x = self.head(x)
-        return x
+            x = self.detection_head(x)
+
+            if self.training:
+                if label is not None:
+                    pred, loss = self.yolo_detector(x, label)
+                    return pred, loss
+                else:
+                    warnings.warn('Label not supplied')
+                    return x
+            else:
+                pred = self.yolo_detector(x)
+                return pred
 
 
 if __name__ == '__main__':

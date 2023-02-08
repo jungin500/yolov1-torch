@@ -20,8 +20,8 @@ TBD
 - [X] [Backbone] Implement ImageNet training pipeline
 - [X] [Backbone] Fine-tuning hyperparameters
 - [X] [Backbone] Train/Evaluate network for ~~a week~~ few days
-- [ ] [Head] Implement VOC2007/2012 training pipeline
-- [ ] [Head] Implement loss function
+- [X] [Head] Implement VOC2007/2012 training pipeline
+- [X] [Head] Implement loss function
 - [ ] [Head] Fine-tuning hyperparameters
 - [ ] [Head] Train/Evaluate network for few days
 

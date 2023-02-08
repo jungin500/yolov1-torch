@@ -1,0 +1,14 @@
+{
+    "configurations": [
+        {
+            "name": "Python: 원격 연결",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "justMyCode": false
+        }
+    ]
+}
