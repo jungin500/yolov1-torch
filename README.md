@@ -1,6 +1,8 @@
 # yolov1-torch
 YOLOv1 PyTorch from scratch
 
+**See newer `v2` implementation on: [v2 branch](https://github.com/jungin500/yolov1-torch/tree/v2)**
+
 # 1. Pretrained model (custom darknet imagnet classifier)
 ## 1.1. Overview
 | Type            | Description | Notes       |
